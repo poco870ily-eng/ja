@@ -11,10 +11,25 @@ const bannedWords = [
   "discord", "everyone", "fuck", "shit"
 ];
 
-// Функция проверки текста на запрещённые слова
-function containsBannedWords(text) {
-  const lower = text.toLowerCase();
-  return bannedWords.some(word => lower.includes(word));
+// Функция проверки JSON на запрещённые слова рекурсивно
+function containsBannedWordsInJSON(text) {
+  try {
+    const obj = JSON.parse(text);
+
+    function check(obj) {
+      if (typeof obj === "string") {
+        return bannedWords.some(word => obj.toLowerCase().includes(word));
+      } else if (typeof obj === "object" && obj !== null) {
+        return Object.values(obj).some(value => check(value));
+      }
+      return false;
+    }
+
+    return check(obj);
+  } catch {
+    // Не JSON
+    return true; // запрещаем отправку
+  }
 }
 
 // Создаем HTTP сервер
@@ -26,16 +41,24 @@ const server = http.createServer((req, res) => {
     req.on("data", chunk => {
       body += chunk.toString();
     });
-    req.on("end", () => {
-      console.log("Получено через /sh:", body);
 
-      // Проверка на запрещённые слова
-      if (containsBannedWords(body)) {
-        console.log("Сообщение содержит запрещённые слова. Игнорируем.");
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("Сообщение содержит запрещённые слова. Не отправлено.\n");
+    req.on("end", () => {
+      try {
+        JSON.parse(body); // проверяем JSON
+      } catch {
+        res.writeHead(400, { "Content-Type": "text/plain" });
+        res.end("Ошибка: только JSON допустим\n");
         return;
       }
+
+      if (containsBannedWordsInJSON(body)) {
+        console.log("Сообщение содержит запрещённые слова. Игнорируем.");
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("Not found");
+        return;
+      }
+
+      console.log("Получено через /sh:", body);
 
       // Рассылаем всем WebSocket клиентам
       for (const client of clients) {
@@ -45,7 +68,7 @@ const server = http.createServer((req, res) => {
       }
 
       res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("Данные отправлены WebSocket клиентам\n");
+      res.end("JSON отправлен WebSocket клиентам\n");
     });
   } else {
     res.writeHead(404);
