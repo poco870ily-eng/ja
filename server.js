@@ -11,25 +11,31 @@ const bannedWords = [
   "discord", "everyone", "fuck", "shit"
 ];
 
-// Функция проверки JSON на запрещённые слова рекурсивно
-function containsBannedWordsInJSON(text) {
+// Преобразуем "псевдо-JSON" с одинарными кавычками в валидный JSON
+function parsePseudoJSON(text) {
   try {
-    const obj = JSON.parse(text);
-
-    function check(obj) {
-      if (typeof obj === "string") {
-        return bannedWords.some(word => obj.toLowerCase().includes(word));
-      } else if (typeof obj === "object" && obj !== null) {
-        return Object.values(obj).some(value => check(value));
-      }
-      return false;
-    }
-
-    return check(obj);
+    const jsonText = text.replace(/'/g, '"');
+    return JSON.parse(jsonText);
   } catch {
-    // Не JSON
-    return true; // запрещаем отправку
+    return null;
   }
+}
+
+// Проверка JSON на запрещённые слова рекурсивно
+function containsBannedWordsInJSON(text) {
+  const obj = parsePseudoJSON(text);
+  if (!obj) return true; // если не разобралось — запрещаем
+
+  function check(obj) {
+    if (typeof obj === "string") {
+      return bannedWords.some(word => obj.toLowerCase().includes(word));
+    } else if (typeof obj === "object" && obj !== null) {
+      return Object.values(obj).some(value => check(value));
+    }
+    return false;
+  }
+
+  return check(obj);
 }
 
 // Создаем HTTP сервер
@@ -43,9 +49,9 @@ const server = http.createServer((req, res) => {
     });
 
     req.on("end", () => {
-      try {
-        JSON.parse(body); // проверяем JSON
-      } catch {
+      const obj = parsePseudoJSON(body);
+
+      if (!obj) {
         res.writeHead(400, { "Content-Type": "text/plain" });
         res.end("Ошибка: только JSON допустим\n");
         return;
@@ -54,16 +60,17 @@ const server = http.createServer((req, res) => {
       if (containsBannedWordsInJSON(body)) {
         console.log("Сообщение содержит запрещённые слова. Игнорируем.");
         res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("Not found");
+        res.end("Сообщение содержит запрещённые слова. Не отправлено.\n");
         return;
       }
 
-      console.log("Получено через /sh:", body);
+      console.log("Получено через /sh:", obj);
 
       // Рассылаем всем WebSocket клиентам
+      const message = JSON.stringify(obj); // всегда отправляем валидный JSON
       for (const client of clients) {
         if (client.readyState === client.OPEN) {
-          client.send(body);
+          client.send(message);
         }
       }
 
@@ -86,6 +93,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (data) => {
     console.log("Получено от клиента:", data.toString());
 
+    // Рассылаем всем WebSocket клиентам
     for (const client of clients) {
       if (client.readyState === ws.OPEN) {
         client.send(data.toString());
