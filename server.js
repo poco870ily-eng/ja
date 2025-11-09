@@ -6,8 +6,14 @@ import crypto from "crypto";
 const PORT = process.env.PORT || 8080;
 const clients = new Set();
 
-// Секретный ключ для шифрования (измените на свой уникальный)
-const SECRET_KEY = "MyUniqueSecretKey2024!@#$%";
+// Секретный ключ из переменной окружения (Render Secret)
+const SECRET_KEY = process.env.ENCRYPTION_KEY || "default-fallback-key-change-me";
+
+// Проверяем, что ключ установлен
+if (!process.env.ENCRYPTION_KEY) {
+  console.warn("⚠️  ВНИМАНИЕ: ENCRYPTION_KEY не установлен! Используется fallback ключ.");
+  console.warn("⚠️  Установите переменную окружения ENCRYPTION_KEY в Render Dashboard");
+}
 
 // Список запрещённых слов
 const bannedWords = [
@@ -107,6 +113,14 @@ const server = http.createServer((req, res) => {
   } else if (req.method === "GET" && parsedUrl.pathname === "/") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("WebSocket Server с шифрованием работает\n");
+  } else if (req.method === "GET" && parsedUrl.pathname === "/health") {
+    // Health check endpoint
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status: "ok",
+      clients: clients.size,
+      encryption: process.env.ENCRYPTION_KEY ? "enabled" : "fallback"
+    }));
   } else {
     res.writeHead(404);
     res.end("Not Found");
@@ -176,6 +190,7 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`HTTP + WebSocket сервер с шифрованием запущен на порту ${PORT}`);
-  console.log(`Используется XOR шифрование с динамическим ключом`);
+  console.log(`🚀 HTTP + WebSocket сервер с шифрованием запущен на порту ${PORT}`);
+  console.log(`🔐 Используется XOR шифрование с динамическим ключом`);
+  console.log(`📊 Статус ключа: ${process.env.ENCRYPTION_KEY ? '✅ Установлен из переменной окружения' : '⚠️  Используется fallback'}`);
 });
