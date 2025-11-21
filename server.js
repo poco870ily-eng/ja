@@ -1,209 +1,154 @@
 import { WebSocketServer } from "ws";
 import http from "http";
 import url from "url";
-import crypto from "crypto";
 
 const PORT = process.env.PORT || 8080;
 const clients = new Set();
 
-const SECRET_KEY = process.env.ENCRYPTION_KEY || "default-fallback-key-change-me";
+// 🔐 Секретный ключ
+const SECRET_KEY = process.env.ENCRYPTION_KEY ||
 
+// Предупреждение
 if (!process.env.ENCRYPTION_KEY) {
-  console.warn("⚠️  ВНИМАНИЕ: ENCRYPTION_KEY не установлен! Используется fallback ключ.");
+  console.warn("⚠️ ENCRYPTION_KEY не установлен! Используется fallback ключ!");
 }
 
+// ❌ Запрещённые слова
 const bannedWords = [
   "raided", "logs", "logging", "nameless", "hub",
   "discord", "everyone", "fuck", "shit"
 ];
 
-// ------------------------
-//  ШИФРОВАНИЕ
-// ------------------------
-function encryptData(text, key = SECRET_KEY) {
-  const keyBytes = Buffer.from(key, 'utf8');
-  const textBytes = Buffer.from(text, 'utf8');
-  const encrypted = Buffer.alloc(textBytes.length);
+// 🔐 Производим байты ключа один раз (экономия CPU)
+const KEY_BYTES = Buffer.from(SECRET_KEY, "utf8");
 
-  for (let i = 0; i < textBytes.length; i++) {
-    encrypted[i] = textBytes[i] ^ keyBytes[i % keyBytes.length] ^ (i % 256);
+// Быстрая XOR + Base64
+function encryptData(text) {
+  const textBytes = Buffer.from(text);
+  const out = Buffer.allocUnsafe(textBytes.length);
+
+  for (let i = 0, j = 0; i < textBytes.length; i++) {
+    out[i] = textBytes[i] ^ KEY_BYTES[j] ^ (i & 255);
+    if (++j >= KEY_BYTES.length) j = 0;
   }
-
-  return encrypted.toString('base64');
+  return out.toString("base64");
 }
 
-// ------------------------
-//  JSON обработка
-// ------------------------
-function parsePseudoJSON(text) {
-  try {
-    const jsonText = text.replace(/'/g, '"');
-    return JSON.parse(jsonText);
-  } catch {
-    return null;
+// Быстрая проверка запрещённых слов
+function containsBannedWords(text) {
+  const lower = text.toLowerCase();
+  for (const w of bannedWords) {
+    if (lower.includes(w)) return true;
   }
+  return false;
 }
 
-function containsBannedWordsInJSON(text) {
-  const obj = parsePseudoJSON(text);
-  if (!obj) return true;
-
-  function check(obj) {
-    if (typeof obj === "string") {
-      return bannedWords.some(w => obj.toLowerCase().includes(w));
-    } else if (typeof obj === "object" && obj !== null) {
-      return Object.values(obj).some(value => check(value));
-    }
-    return false;
-  }
-
-  return check(obj);
+// Безопасный JSON.parse
+function safeJSON(text) {
+  try { return JSON.parse(text); }
+  catch { return null; }
 }
 
-// ------------------------
-//  ОЧЕРЕДЬ СООБЩЕНИЙ WS
-// ------------------------
-function createQueue(ws) {
-  ws._queue = [];
-
-  ws._sendQ = function(data) {
-    if (ws.readyState !== ws.OPEN) return;
-
-    // если буфер переполнен — кладём в очередь
-    if (ws.bufferedAmount > 0) {
-      ws._queue.push(data);
-      return;
-    }
-
-    ws.send(data, err => {
-      if (err) {
-        ws._queue.push(data);
-      }
-    });
-  };
-
-  ws._flushQ = function() {
-    if (ws.readyState !== ws.OPEN) return;
-    if (!ws._queue.length) return;
-    if (ws.bufferedAmount > 0) return;
-
-    const data = ws._queue.shift();
-    ws.send(data, () => ws._flushQ());
+// Формируем пакет шифрования
+function encryptPacket(jsonString) {
+  return {
+    encrypted: true,
+    data: encryptData(jsonString),
+    timestamp: Date.now()
   };
 }
 
-// ------------------------
-//  HTTP сервер
-// ------------------------
+// Общая безопасная WS-рассылка
+function broadcast(obj) {
+  const payload = JSON.stringify(obj);
+
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(payload, err => {
+        if (err) console.log("WS send error:", err.message);
+      });
+    }
+  }
+}
+
+// ---------------------- HTTP SERVER ----------------------
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
+  // POST /sh — входящий JSON → шифрование → broadcast
   if (req.method === "POST" && parsedUrl.pathname === "/sh") {
     let body = "";
-
-    req.on("data", chunk => {
-      body += chunk.toString();
-    });
-
+    req.on("data", chunk => body += chunk);
     req.on("end", () => {
-      const obj = parsePseudoJSON(body);
+
+      if (containsBannedWords(body)) {
+        res.writeHead(200);
+        return res.end("blocked\n");
+      }
+
+      const obj = safeJSON(body);
       if (!obj) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Ошибка: только JSON допустим\n");
-        return;
+        res.writeHead(400);
+        return res.end("invalid json\n");
       }
 
-      if (containsBannedWordsInJSON(body)) {
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("Сообщение содержит запрещённые слова. Не отправлено.\n");
-        return;
-      }
+      const encryptedJSON = encryptPacket(body);
+      broadcast(encryptedJSON);
 
-      const jsonString = JSON.stringify(obj);
-      const encrypted = encryptData(jsonString);
-
-      const payload = JSON.stringify({
-        encrypted: true,
-        data: encrypted,
-        timestamp: Date.now()
-      });
-
-      for (const client of clients) {
-        client._sendQ(payload);
-      }
-
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("Зашифрованный JSON отправлен WebSocket клиентам\n");
+      res.writeHead(200);
+      res.end("ok\n");
     });
 
-  } else if (req.method === "GET" && parsedUrl.pathname === "/") {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("WebSocket Server с шифрованием работает\n");
+    return;
+  }
 
-  } else if (req.method === "GET" && parsedUrl.pathname === "/health") {
+  if (req.method === "GET" && parsedUrl.pathname === "/") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("WebSocket encryption server running\n");
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       status: "ok",
       clients: clients.size,
       encryption: process.env.ENCRYPTION_KEY ? "enabled" : "fallback"
     }));
-
-  } else {
-    res.writeHead(404);
-    res.end("Not Found");
+    return;
   }
+
+  res.writeHead(404);
+  res.end("Not Found");
 });
 
-// ------------------------
-//  WebSocket сервер
-// ------------------------
+// ---------------------- WEBSOCKET SERVER ----------------------
 const wss = new WebSocketServer({ server });
 
-wss.on("connection", (ws) => {
-  createQueue(ws);
-
+wss.on("connection", ws => {
   clients.add(ws);
-  console.log("Клиент подключился. Всего:", clients.size);
 
-  const flushInterval = setInterval(() => ws._flushQ(), 5);
-
-  ws.on("message", (data) => {
+  ws.on("message", data => {
     const text = data.toString();
 
-    let obj = null;
-    try { obj = JSON.parse(text); } catch { obj = parsePseudoJSON(text); }
+    if (containsBannedWords(text)) return;
 
+    const obj = safeJSON(text);
     if (!obj) return;
-    if (containsBannedWordsInJSON(text)) return;
 
-    const jsonString = JSON.stringify(obj);
-    const encrypted = encryptData(jsonString);
-
-    const payload = JSON.stringify({
-      encrypted: true,
-      data: encrypted,
-      timestamp: Date.now()
-    });
-
-    for (const client of clients) {
-      client._sendQ(payload);
-    }
+    broadcast(encryptPacket(text));
   });
 
   ws.on("close", () => {
     clients.delete(ws);
-    clearInterval(flushInterval);
-    console.log("Клиент отключился. Осталось:", clients.size);
   });
 
-  ws.on("error", (err) => {
+  ws.on("error", () => {
     clients.delete(ws);
-    clearInterval(flushInterval);
-    console.log("Ошибка WS:", err.message);
   });
 });
 
-// ------------------------
+// ---------------------- START ----------------------
 server.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  console.log(`🚀 Server running at port ${PORT}`);
 });
