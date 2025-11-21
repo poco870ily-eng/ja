@@ -5,24 +5,18 @@ import url from "url";
 const PORT = process.env.PORT || 8080;
 const clients = new Set();
 
-// 🔐 Секретный ключ
-const SECRET_KEY = process.env.ENCRYPTION_KEY ||
-
-// Предупреждение
-if (!process.env.ENCRYPTION_KEY) {
-  console.warn("⚠️ ENCRYPTION_KEY не установлен! Используется fallback ключ!");
+const SECRET_KEY = process.env.ENCRYPTION_KEY;
+if (!SECRET_KEY) {
+  throw new Error("ENCRYPTION_KEY не установлен!");
 }
 
-// ❌ Запрещённые слова
 const bannedWords = [
   "raided", "logs", "logging", "nameless", "hub",
   "discord", "everyone", "fuck", "shit"
 ];
 
-// 🔐 Производим байты ключа один раз (экономия CPU)
 const KEY_BYTES = Buffer.from(SECRET_KEY, "utf8");
 
-// Быстрая XOR + Base64
 function encryptData(text) {
   const textBytes = Buffer.from(text);
   const out = Buffer.allocUnsafe(textBytes.length);
@@ -34,7 +28,6 @@ function encryptData(text) {
   return out.toString("base64");
 }
 
-// Быстрая проверка запрещённых слов
 function containsBannedWords(text) {
   const lower = text.toLowerCase();
   for (const w of bannedWords) {
@@ -43,13 +36,11 @@ function containsBannedWords(text) {
   return false;
 }
 
-// Безопасный JSON.parse
 function safeJSON(text) {
   try { return JSON.parse(text); }
   catch { return null; }
 }
 
-// Формируем пакет шифрования
 function encryptPacket(jsonString) {
   return {
     encrypted: true,
@@ -58,10 +49,8 @@ function encryptPacket(jsonString) {
   };
 }
 
-// Общая безопасная WS-рассылка
 function broadcast(obj) {
   const payload = JSON.stringify(obj);
-
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) {
       ws.send(payload, err => {
@@ -71,16 +60,13 @@ function broadcast(obj) {
   }
 }
 
-// ---------------------- HTTP SERVER ----------------------
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
-  // POST /sh — входящий JSON → шифрование → broadcast
   if (req.method === "POST" && parsedUrl.pathname === "/sh") {
     let body = "";
     req.on("data", chunk => body += chunk);
     req.on("end", () => {
-
       if (containsBannedWords(body)) {
         res.writeHead(200);
         return res.end("blocked\n");
@@ -98,7 +84,6 @@ const server = http.createServer((req, res) => {
       res.writeHead(200);
       res.end("ok\n");
     });
-
     return;
   }
 
@@ -113,7 +98,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: "ok",
       clients: clients.size,
-      encryption: process.env.ENCRYPTION_KEY ? "enabled" : "fallback"
+      encryption: "enabled"
     }));
     return;
   }
@@ -122,7 +107,6 @@ const server = http.createServer((req, res) => {
   res.end("Not Found");
 });
 
-// ---------------------- WEBSOCKET SERVER ----------------------
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", ws => {
@@ -130,7 +114,6 @@ wss.on("connection", ws => {
 
   ws.on("message", data => {
     const text = data.toString();
-
     if (containsBannedWords(text)) return;
 
     const obj = safeJSON(text);
@@ -139,16 +122,10 @@ wss.on("connection", ws => {
     broadcast(encryptPacket(text));
   });
 
-  ws.on("close", () => {
-    clients.delete(ws);
-  });
-
-  ws.on("error", () => {
-    clients.delete(ws);
-  });
+  ws.on("close", () => clients.delete(ws));
+  ws.on("error", () => clients.delete(ws));
 });
 
-// ---------------------- START ----------------------
 server.listen(PORT, () => {
-  console.log(`🚀 Server running at port ${PORT}`);
+  console.log(`Server running at port ${PORT}`);
 });
