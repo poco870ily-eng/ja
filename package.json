@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "WebSocket сервер для Roblox и Python",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
