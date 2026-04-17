@@ -1,6 +1,7 @@
 import { WebSocketServer } from "ws";
 import http from "http";
 import url from "url";
+import crypto from "crypto";
 
 const PORT = process.env.PORT || 8080;
 const clients = new Set();
@@ -15,17 +16,28 @@ const bannedWords = [
   "discord", "everyone", "fuck", "shit"
 ];
 
-const KEY_BYTES = Buffer.from(SECRET_KEY, "utf8");
+const AES_KEY = crypto.createHash("sha256").update(SECRET_KEY).digest("hex");
 
 function encryptData(text) {
-  const textBytes = Buffer.from(text);
-  const out = Buffer.allocUnsafe(textBytes.length);
+  const iv = crypto.randomBytes(12);
+  const keyBuf = Buffer.from(AES_KEY, "hex");
 
-  for (let i = 0, j = 0; i < textBytes.length; i++) {
-    out[i] = textBytes[i] ^ KEY_BYTES[j] ^ (i & 255);
-    if (++j >= KEY_BYTES.length) j = 0;
-  }
-  return out.toString("base64");
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv);
+
+  const encrypted = Buffer.concat([
+    cipher.update(text, "utf8"),
+    cipher.final()
+  ]);
+
+  const tag = cipher.getAuthTag();
+
+  return {
+    encrypted: true,
+    algorithm: "AES-GCM",
+    iv: iv.toString("base64"),
+    data: Buffer.concat([encrypted, tag]).toString("base64"),
+    timestamp: Date.now()
+  };
 }
 
 function containsBannedWords(text) {
@@ -39,14 +51,6 @@ function containsBannedWords(text) {
 function safeJSON(text) {
   try { return JSON.parse(text); }
   catch { return null; }
-}
-
-function encryptPacket(jsonString) {
-  return {
-    encrypted: true,
-    data: encryptData(jsonString),
-    timestamp: Date.now()
-  };
 }
 
 function broadcast(obj) {
@@ -78,8 +82,7 @@ const server = http.createServer((req, res) => {
         return res.end("invalid json\n");
       }
 
-      const encryptedJSON = encryptPacket(body);
-      broadcast(encryptedJSON);
+      broadcast(encryptData(body));
 
       res.writeHead(200);
       res.end("ok\n");
@@ -98,7 +101,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: "ok",
       clients: clients.size,
-      encryption: "enabled"
+      encryption: "aes-256-gcm"
     }));
     return;
   }
@@ -119,7 +122,7 @@ wss.on("connection", ws => {
     const obj = safeJSON(text);
     if (!obj) return;
 
-    broadcast(encryptPacket(text));
+    broadcast(encryptData(text));
   });
 
   ws.on("close", () => clients.delete(ws));
