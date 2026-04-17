@@ -16,26 +16,26 @@ const bannedWords = [
   "discord", "everyone", "fuck", "shit"
 ];
 
-const AES_KEY = crypto.createHash("sha256").update(SECRET_KEY).digest("hex");
+function makeAesKey(secret) {
+  return crypto.createHash("sha256").update(secret, "utf8").digest();
+}
+
+const AES_KEY = makeAesKey(SECRET_KEY);
 
 function encryptData(text) {
-  const iv = crypto.randomBytes(12);
-  const keyBuf = Buffer.from(AES_KEY, "hex");
-
-  const cipher = crypto.createCipheriv("aes-256-gcm", keyBuf, iv);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", AES_KEY, iv);
 
   const encrypted = Buffer.concat([
     cipher.update(text, "utf8"),
     cipher.final()
   ]);
 
-  const tag = cipher.getAuthTag();
-
   return {
     encrypted: true,
-    algorithm: "AES-GCM",
-    iv: iv.toString("base64"),
-    data: Buffer.concat([encrypted, tag]).toString("base64"),
+    algorithm: "AES-CBC",
+    iv: iv.toString("hex"),
+    data: encrypted.toString("base64"),
     timestamp: Date.now()
   };
 }
@@ -101,7 +101,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: "ok",
       clients: clients.size,
-      encryption: "aes-256-gcm"
+      encryption: "AES-CBC"
     }));
     return;
   }
@@ -117,6 +117,7 @@ wss.on("connection", ws => {
 
   ws.on("message", data => {
     const text = data.toString();
+
     if (containsBannedWords(text)) return;
 
     const obj = safeJSON(text);
