@@ -11,16 +11,19 @@ if (!SECRET_KEY) {
   throw new Error("ENCRYPTION_KEY не установлен!");
 }
 
-const bannedWords = [
-  "raided", "logs", "logging", "nameless", "hub",
-  "discord", "everyone", "fuck", "shit"
-];
-
-function makeAesKey(secret) {
-  return crypto.createHash("sha256").update(secret, "utf8").digest();
+if (Buffer.byteLength(SECRET_KEY, "utf8") !== 32) {
+  throw new Error("ENCRYPTION_KEY должен быть ровно 32 байта для AES-256-CBC");
 }
 
-const AES_KEY = makeAesKey(SECRET_KEY);
+const AES_KEY = Buffer.from(SECRET_KEY, "utf8");
+
+function safeJSON(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
 
 function encryptData(text) {
   const iv = crypto.randomBytes(16);
@@ -40,26 +43,12 @@ function encryptData(text) {
   };
 }
 
-function containsBannedWords(text) {
-  const lower = text.toLowerCase();
-  for (const w of bannedWords) {
-    if (lower.includes(w)) return true;
-  }
-  return false;
-}
-
-function safeJSON(text) {
-  try { return JSON.parse(text); }
-  catch { return null; }
-}
-
 function broadcast(obj) {
   const payload = JSON.stringify(obj);
+
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) {
-      ws.send(payload, err => {
-        if (err) console.log("WS send error:", err.message);
-      });
+      ws.send(payload);
     }
   }
 }
@@ -69,13 +58,12 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && parsedUrl.pathname === "/sh") {
     let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      if (containsBannedWords(body)) {
-        res.writeHead(200);
-        return res.end("blocked\n");
-      }
 
+    req.on("data", chunk => {
+      body += chunk;
+    });
+
+    req.on("end", () => {
       const obj = safeJSON(body);
       if (!obj) {
         res.writeHead(400);
@@ -87,22 +75,13 @@ const server = http.createServer((req, res) => {
       res.writeHead(200);
       res.end("ok\n");
     });
+
     return;
   }
 
   if (req.method === "GET" && parsedUrl.pathname === "/") {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("WebSocket encryption server running\n");
-    return;
-  }
-
-  if (req.method === "GET" && parsedUrl.pathname === "/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      status: "ok",
-      clients: clients.size,
-      encryption: "AES-CBC"
-    }));
     return;
   }
 
@@ -117,9 +96,6 @@ wss.on("connection", ws => {
 
   ws.on("message", data => {
     const text = data.toString();
-
-    if (containsBannedWords(text)) return;
-
     const obj = safeJSON(text);
     if (!obj) return;
 
